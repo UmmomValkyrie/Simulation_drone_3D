@@ -6,6 +6,7 @@
 
 #define WIDTH 1760
 #define HEIGHT 880
+#define RENDER_DISTANCE 2
 #define CHUNK_SIZE 64
 #define MAP_WIDTH 200
 #define MAP_HEIGHT 200
@@ -33,7 +34,7 @@ struct cameraState {
 struct chunk{
     int chunkX;
     int chunkY;
-    float heightmap[CHUNK_SIZE][CHUNK_SIZE];
+    float heightmap[CHUNK_SIZE+1][CHUNK_SIZE+1];
 };
 
 struct Node{
@@ -59,7 +60,7 @@ struct clouds{
 const tree* get_forest();
 const rocks* get_rocks();
 
-CameraState get_current_camera_position(void);
+cameraState get_current_camera_position(void);
 void update_camera_fps(const Uint8* keys, double dt);
 void init_SDL(void);
 void affichage(const DroneState* drone, float camRadius, float camPitch, float camYaw);
@@ -67,7 +68,7 @@ float get_ground_height_at(float x, float y);
 int menu();
 void init_perlin();
 void generate_chunk(chunk* chunk, int cx, int cy);
-void updateCurrentChunk(const DroneState* drone);
+void updateChunks(void);
 int load_chunk(chunk* chunk, int cx, int cy);
 void save_chunk(chunk* chunk);
 void generate_heightmap();

@@ -11,8 +11,10 @@
 #include <string.h>
 #include <math.h>
 #include "drone.h"
-#include "./map/map_perlin.h"
 
+#include "./map/map_perlin.h"
+int mode_fps = 0;
+DroneState drone;
 int main(int argc, char *argv[]) {
 
     SDL_WM_SetCaption("Simulation Drone", NULL);
@@ -38,16 +40,13 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "Erreur lors du chargement/génération du chunk. Quitte.\n");
     return EXIT_FAILURE;
     }
-
     // État initial du drone
-    DroneState drone;
     memset(&drone, 0, sizeof(drone));
     drone.orientation.w = 10.;
-    drone.position.x = 50;  // ou un autre point central
-    drone.position.y = 20;
+    drone.position.x = CHUNK_SIZE / 2;;  // ou un autre point central
+    drone.position.y = CHUNK_SIZE / 2;;
 
-    float ground_z = get_ground_height_at(drone.position.x, drone.position.y);
-    drone.position.z = ground_z + 2.0;  // 2.0 = marge de hauteur au-dessus du sol
+    drone.position.z = get_ground_height_at(drone.position.x, drone.position.y) + 2 ;
 
 
     // Vitesses initiales des rotors (rad/s)
@@ -246,10 +245,9 @@ int main(int argc, char *argv[]) {
         }
         else{
             updateDrone(&drone, rotorSpeeds, deltaTime);
-            updateCurrentChunk();
             affichage(&drone, camRadius, camPitch, camYaw);
         }
-
+        updateChunks();
         // printf("Position: %.2f %.2f %.2f | Vitesse: %.2f %.2f %.2f\n",
         // drone.position.x, drone.position.y, drone.position.z,
         // drone.velocity.x, drone.velocity.y, drone.velocity.z);
