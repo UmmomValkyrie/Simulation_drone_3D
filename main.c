@@ -1,63 +1,53 @@
 #define SDL_MAIN_HANDLED
+#include <time.h>
 #include <SDL/SDL.h>
 #include <SDL/SDL_gfxPrimitives.h>
 #include <SDL/SDL_opengl.h>
 #include <GL/gl.h>
 #include <GL/glu.h>
+#include <GL/glut.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#ifdef _WIN32
-#include <windows.h>
-#endif
-#include "window.h"
 #include "drone.h"
+#include "./map/map_perlin.h"
 
 int main(int argc, char *argv[]) {
-    // Pour la console de debug sur Windows
-    #ifdef _WIN32
-    AllocConsole();
-    freopen("CON", "w", stdout);
-    freopen("CON", "w", stderr);
-    freopen("CON", "r", stdin);
-    #endif
 
-    // Initialisation de SDL et création de la fenêtre
-    init_SDL();
-    SDL_Surface *ecran = SDL_SetVideoMode(1200, 700, 32, SDL_OPENGL | SDL_DOUBLEBUF);
-    if (!ecran) {
-        fprintf(stderr, "SDL_SetVideoMode a échoué : %s\n", SDL_GetError());
-        return EXIT_FAILURE;
-    }
-    SDL_WM_SetCaption("Drone 3D", NULL);
+    SDL_WM_SetCaption("Simulation Drone", NULL);
 
-    // MANETTE 
-    SDL_JoystickEventState(SDL_ENABLE);
-    SDL_Joystick *joy = NULL;
-    if (SDL_NumJoysticks() > 0) {
-        joy = SDL_JoystickOpen(0);
-        if (!joy) {
-            fprintf(stderr, "Impossible d'ouvrir la manette: %s\n", SDL_GetError());
-        } else {
-            printf("Manette détectée : %s\n", SDL_JoystickName(0));
-        }
-    }
-
-    // Configuration d'OpenGL
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    gluPerspective(60.0, 800.0/600.0, 0.1, 1000.0);
-    glMatrixMode(GL_MODELVIEW);
+    // Paramètres de base OpenGL
+    SDL_Init(SDL_INIT_VIDEO);
+    SDL_SetVideoMode(WIDTH, HEIGHT, 32, SDL_OPENGL);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glClearColor(0.2f, 0.4f, 1.0f, 1.f);
     glEnable(GL_DEPTH_TEST);
-    glEnable(GL_CULL_FACE);
-    glClearColor(0.0f, 0.0f, 0.2f, 1.0f);
+    glEnable(GL_LIGHTING);
+    glEnable(GL_LIGHT0);
+    glEnable(GL_COLOR_MATERIAL);
+    glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
+
+    GLfloat light_pos[] = { 0.0f, 100.0f, 0.0f, 1.0f };
+    glLightfv(GL_LIGHT0, GL_POSITION, light_pos);
+
+    // Génération de la map (appelé une seule fois)
+    srand(time(NULL));
+    init_perlin();
+    if (!menu()) {
+    fprintf(stderr, "Erreur lors du chargement/génération du chunk. Quitte.\n");
+    return EXIT_FAILURE;
+    }
 
     // État initial du drone
     DroneState drone;
     memset(&drone, 0, sizeof(drone));
-    drone.orientation.w = 1.0;
-    drone.position.z = 1.0;
+    drone.orientation.w = 10.;
+    drone.position.x = 50;  // ou un autre point central
+    drone.position.y = 20;
+
+    float ground_z = get_ground_height_at(drone.position.x, drone.position.y);
+    drone.position.z = ground_z + 2.0;  // 2.0 = marge de hauteur au-dessus du sol
 
 
     // Vitesses initiales des rotors (rad/s)
@@ -66,17 +56,22 @@ int main(int argc, char *argv[]) {
 
     // Pas de temps fixe pour la simulation
     const double deltaTime = 5e-3; // 0.05 s
+    int mouseRightDown = 0;
+    float camYaw = 0.0f;    // angle horizontal
+    float camPitch = 0.3f;  // angle vertical (0 = horizontal, pi/2 = au-dessus)
+    float camRadius = 10.0f;
+    int lastMouseX = 0, lastMouseY = 0;
 
     // Contrôle du throttle
     double throttle = 0.0;         // valeur initiale
     const double throttleStep = 10.0;  // incrément par appui
     const double throttleMax = 1000.0; // borne supérieure
-    double pitchInput     = 0.0;        // décalage de gaz pour le pitch
-    const double pitchStep =  20.0;     // pas de modification par appui
+    double pitchInput     = 200.0;        // décalage de gaz pour le pitch
+    const double pitchStep =  100.0;     // pas de modification par appui
     const double pitchMax  = throttleMax; // on ne dépasse pas la même borne
     // Contrôle du roll
     double rollInput   = 0.0;
-    const double rollStep      = 20.0;    // ajuste si tu veux un contrôle plus fin
+    const double rollStep      = 100.0;    // ajuste si tu veux un contrôle plus fin
     const double rollMax       = throttleMax;
 
     // Contrôle du yaw
@@ -88,9 +83,10 @@ int main(int argc, char *argv[]) {
 
     int running = 1;
     SDL_Event event;
-
+    
     // Boucle principale
     while (running) {
+        const Uint8* keystates = SDL_GetKeyState(NULL);
         // Gestion des événements
         while (SDL_PollEvent(&event)) {
             switch (event.type) {
@@ -98,42 +94,100 @@ int main(int argc, char *argv[]) {
                 case SDL_QUIT:
                     running = 0;
                     break;
-    
+                    
+                case SDL_MOUSEBUTTONDOWN:
+                if (event.button.button == SDL_BUTTON_RIGHT) {
+                    mouseRightDown = 1;
+                    lastMouseX = event.button.x;
+                    lastMouseY = event.button.y;
+                }
+                break;
+
+            case SDL_MOUSEBUTTONUP:
+                if (event.button.button == SDL_BUTTON_RIGHT) {
+                    mouseRightDown = 0;
+                }
+                break;
+
+            case SDL_MOUSEMOTION:
+                if (mouseRightDown) {
+                    int dx = event.motion.x - lastMouseX;
+                    int dy = event.motion.y - lastMouseY;
+
+                    camYaw   += dx * 0.005f;               // vitesse de rotation horizontale
+                    camPitch -= dy * 0.005f;               // vitesse de rotation verticale
+
+                    // Clamp pitch entre [0.1, PI/2]
+                    if (camPitch < 0.1f) camPitch = 0.1f;
+                    if (camPitch > 1.5f) camPitch = 1.5f;
+
+                    lastMouseX = event.motion.x;
+                    lastMouseY = event.motion.y;
+                }
+                break;
+
                 case SDL_KEYDOWN:
                     switch (event.key.keysym.sym) {
+                        case SDLK_l:
+                            mode_fps = !mode_fps;
+                            SDL_ShowCursor(mode_fps ? SDL_DISABLE : SDL_ENABLE);
+                            break;
                         case SDLK_ESCAPE:
                             running = 0;
                             break;
-                        case SDLK_w:
-                            // augmenter les gaz
+                        case SDLK_SPACE:
                             throttle += throttleStep;
                             if (throttle > throttleMax) throttle = throttleMax;
                             break;
-                        case SDLK_s:
-                            // réduire les gaz (optionnel)
+                        case SDLK_LCTRL:
                             throttle -= throttleStep;
                             if (throttle < 0.0) throttle = 0.0;
                             break;
                         case SDLK_r:
                             // RESET LA POSITION DU DRONE DANS LA SIMU
-                            drone.position = (Vec3){0,0,0};
-                            drone.velocity = (Vec3){0,0,0};
-                            drone.orientation = (Quaternion){1,0,0,0};
-                            drone.angularVelocity = (Vec3){0,0,0};
-                            if (throttle < 0.0) throttle = 0.0;
+                            drone.position = (Vec3){0, 0, 0};
+                            drone.velocity = (Vec3){0, 0, 0};
+                            drone.orientation = (Quaternion){1, 0, 0, 0};
+                            drone.angularVelocity = (Vec3){0, 0, 0};
+                            throttle = 0.0;
+                            pitchInput = 0.0;
+                            rollInput = 0.0;
+                            yawInput = 0.0;
                             break;
-                        case SDLK_UP:   // flèche Haut : penche vers l’avant
+
+                        // ZQSD pour contrôle du pitch et roll
+                        case SDLK_z: // Avancer (pitch avant)
                             pitchInput += pitchStep;
                             if (pitchInput > pitchMax) pitchInput = pitchMax;
                             break;
-                        case SDLK_DOWN: // flèche Bas : penche vers l’arrière
+                        case SDLK_s: // Reculer (pitch arrière)
                             pitchInput -= pitchStep;
                             if (pitchInput < -pitchMax) pitchInput = -pitchMax;
                             break;
+                        case SDLK_q: // Roulis gauche
+                            rollInput -= rollStep;
+                            if (rollInput < -rollMax) rollInput = -rollMax;
+                            break;
+                        case SDLK_d: // Roulis droite
+                            rollInput += rollStep;
+                            if (rollInput > rollMax) rollInput = rollMax;
+                            break;
+
+                        // Optionnel : Yaw avec A/E ?
+                        case SDLK_a: // Torsion gauche
+                            yawInput -= yawStep;
+                            if (yawInput < -yawMax) yawInput = -yawMax;
+                            break;
+                        case SDLK_e: // Torsion droite
+                            yawInput += yawStep;
+                            if (yawInput > yawMax) yawInput = yawMax;
+                            break;
+
                         default:
                             break;
                     }
-                    break;
+                break;
+
     
                 case SDL_JOYAXISMOTION:
                     // event.jaxis.axis = 0:left stick X, 1:left stick Y, 2:right stick X, 3:right stick Y
@@ -185,26 +239,21 @@ int main(int argc, char *argv[]) {
         rotorSpeeds[3] = throttle - pitchInput + rollInput + yawInput;  // front-right
         rotorSpeeds[1] = throttle + pitchInput + rollInput - yawInput;  // rear-right
         rotorSpeeds[2] = throttle + pitchInput - rollInput + yawInput;  // rear-left
-        
 
-        //DEBUG 
-        printf("%d\n",event.jaxis.value);
+        if (mode_fps){
+            update_camera_fps(keystates, deltaTime);
+            affichage(NULL, 0, 0, 0); // drone inutile ici
+        }
+        else{
+            updateDrone(&drone, rotorSpeeds, deltaTime);
+            updateCurrentChunk();
+            affichage(&drone, camRadius, camPitch, camYaw);
+        }
 
-        // // On compose l’effort global throttle + pitchInput
-        // rotorSpeeds[0] = throttle - pitchInput;  // rotor avant-gauche
-        // rotorSpeeds[1] = throttle - pitchInput;  // rotor avant-droit
-        // rotorSpeeds[2] = throttle + pitchInput;  // rotor arrière-droit
-        // rotorSpeeds[3] = throttle + pitchInput;  // rotor arrière-gauche
-
-        // Mise à jour physique du drone avec pas de temps fixe
-        updateDrone(&drone, rotorSpeeds, deltaTime);
-        camera_x = (int)drone.position.x;
-        camera_y = (int)drone.position.z; // on suit l'altitude comme axe Y dans window.c
-
-
-        // Rendu de la scène
-        affichage(ecran, &drone);
-
+        // printf("Position: %.2f %.2f %.2f | Vitesse: %.2f %.2f %.2f\n",
+        // drone.position.x, drone.position.y, drone.position.z,
+        // drone.velocity.x, drone.velocity.y, drone.velocity.z);
+        printf("Z: %.2f | Vz: %.2f | Throttle: %.1f\n", drone.position.z, drone.velocity.z, throttle);
         // Limiteur de boucle
         SDL_Delay(5);
     }
