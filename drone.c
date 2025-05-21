@@ -171,5 +171,5 @@ void updateDrone(DroneState* state, const double rotorSpeeds[4], double dt) {
     // 7. Collision avec les objets bitch 
     apply_rotor_collision(state);
     // Debug
-    printf("Z: %.2f | Vz: %.2f | Ground: %.2f\n", state->position.z, state->velocity.z, ground);
+    // printf("Z: %.2f | Vz: %.2f | Ground: %.2f\n", state->position.z, state->velocity.z, ground);
 }

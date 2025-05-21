@@ -19,7 +19,10 @@ extern int mode_fps;
 extern DroneState drone;
 Vec3 cam_pos = {50.0f, 50.0f, 20.0f};
 float cam_yaw = 0.0f, cam_pitch = 0.0f;
-char worldName[64] = "world_1";;
+char* worldName = NULL;
+char* seedString = NULL;
+char** worldNames = NULL;
+int worldCount = 0;
 chunk* c = NULL;
 chunk* loadedChunks[2 * RENDER_DISTANCE + 1][2 * RENDER_DISTANCE + 1];
 rocks rocks_place[NB_ROCKS];
@@ -50,9 +53,18 @@ Node* insert(Node* root, int x, int y){
     }
     return root;
 }
+unsigned int hash_seed_string(const char* str) {
+    unsigned int hash = 5381;
+    int c;
+    while ((c = *str++)) {
+        hash = ((hash << 5) + hash) + c;  // hash * 33 + c
+    }
+    return hash;
+}
 
 void init_perlin() {
-    srand(world_seed);  // déterministe avec la seed
+    int world_seed = hash_seed_string(seedString);
+    srand(world_seed);
 
     int perm[256];
     for (int i = 0; i < 256; i++) perm[i] = i;
@@ -129,48 +141,100 @@ void generate_chunk(chunk* chunk, int cx, int cy) {
 //     }
 // }
 void updateChunks() {
-    cameraState cam = get_current_camera_position(); 
+    cameraState cam = get_current_camera_position();
+    printf("[updateChunks] Position : %.2f %.2f\n", cam.x, cam.y);
     int cx = (int)(cam.x) / CHUNK_SIZE;
     int cy = (int)(cam.y) / CHUNK_SIZE;
 
-    chunk* newChunks[2 * RENDER_DISTANCE + 1][2 * RENDER_DISTANCE + 1] = { NULL };
+    if (lastChunkX == -9999 && lastChunkY == -9999) {
+        lastChunkX = cx;
+        lastChunkY = cy;
+    }
 
+    const int SIZE = 2 * RENDER_DISTANCE + 1;
+    chunk* newChunks[SIZE][SIZE];
+    for (int i = 0; i < SIZE; i++)
+        for (int j = 0; j < SIZE; j++)
+            newChunks[i][j] = NULL;
+
+    // Compteurs debug
+    int reusedCount = 0;
+    int generatedCount = 0;
+    int freedCount = 0;
+
+    // Génère ou déplace les chunks
     for (int dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
         for (int dy = -RENDER_DISTANCE; dy <= RENDER_DISTANCE; dy++) {
             int chunkX = cx + dx;
             int chunkY = cy + dy;
             int newIx = dx + RENDER_DISTANCE;
             int newIy = dy + RENDER_DISTANCE;
-
-            // Cherche l'ancien chunk déjà chargé
             int oldIx = chunkX - lastChunkX + RENDER_DISTANCE;
             int oldIy = chunkY - lastChunkY + RENDER_DISTANCE;
 
-            if (oldIx >= 0 && oldIx <= 2 * RENDER_DISTANCE && oldIy >= 0 && oldIy <= 2 * RENDER_DISTANCE) {
+            if (oldIx >= 0 && oldIx < SIZE &&
+                oldIy >= 0 && oldIy < SIZE &&
+                loadedChunks[oldIx][oldIy]) {
+                
                 newChunks[newIx][newIy] = loadedChunks[oldIx][oldIy];
                 loadedChunks[oldIx][oldIy] = NULL;
+                reusedCount++;
             } else {
                 chunk* ch = malloc(sizeof(chunk));
+                if (!ch) {
+                    fprintf(stderr, "Erreur malloc pour chunk (%d, %d)\n", chunkX, chunkY);
+                    exit(EXIT_FAILURE);
+                }
+
                 if (!load_chunk(ch, chunkX, chunkY)) {
                     generate_chunk(ch, chunkX, chunkY);
                     save_chunk(ch);
+                    generatedCount++;
                 }
                 newChunks[newIx][newIy] = ch;
             }
         }
     }
-    for (int i = 0; i < 2 * RENDER_DISTANCE + 1; i++) {
-        for (int j = 0; j < 2 * RENDER_DISTANCE + 1; j++) {
-            if (loadedChunks[i][j]) {
-                save_chunk(loadedChunks[i][j]);
-                free(loadedChunks[i][j]);
+
+    // Libère les anciens chunks non utilisés
+    for (int i = 0; i < SIZE; i++) {
+        for (int j = 0; j < SIZE; j++) {
+            chunk* ch = loadedChunks[i][j];
+            if (ch) {
+                // Vérifie s’il a été déplacé dans newChunks
+                int moved = 0;
+                for (int ni = 0; ni < SIZE && !moved; ni++) {
+                    for (int nj = 0; nj < SIZE && !moved; nj++) {
+                        if (newChunks[ni][nj] == ch)
+                            moved = 1;
+                    }
+                }
+
+                if (!moved) {
+                    save_chunk(ch);
+                    free(ch);
+                    freedCount++;
+                }
+
+                loadedChunks[i][j] = NULL;
             }
         }
     }
-    memcpy(loadedChunks, newChunks, sizeof(newChunks));
+
+    // Copie dans loadedChunks
+    for (int i = 0; i < SIZE; i++) {
+        for (int j = 0; j < SIZE; j++) {
+            loadedChunks[i][j] = newChunks[i][j];
+        }
+    }
+
     lastChunkX = cx;
     lastChunkY = cy;
+    
+    printf("Chunks → réutilisés : %d | générés : %d | libérés : %d\n", reusedCount, generatedCount, freedCount);
 }
+
+
 
 chunk* get_chunk_at_world(int x, int y) {
     int chunkX = x / CHUNK_SIZE;
@@ -185,30 +249,39 @@ chunk* get_chunk_at_world(int x, int y) {
     int idxX = chunkX - (lastChunkX - RENDER_DISTANCE);
     int idxY = chunkY - (lastChunkY - RENDER_DISTANCE);
 
-    if (idxX < 0 || idxX >= 2 * RENDER_DISTANCE + 1 || idxY < 0 || idxY >= 2 * RENDER_DISTANCE + 1)
+    if (idxX < 0 || idxX >= 2 * RENDER_DISTANCE + 1 ||
+        idxY < 0 || idxY >= 2 * RENDER_DISTANCE + 1) {
+        fprintf(stderr, "[get_chunk_at_world] Chunk (%d,%d) hors de portée (%d,%d)\n", chunkX, chunkY, idxX, idxY);
         return NULL;
+    }
 
     return loadedChunks[idxX][idxY];
 }
 
+
 void save_chunk(chunk* chunk) {
-    char path[255];
-    sprintf(path, "chunks/%s/chunk_%d_%d.bin", worldName, chunk->chunkX, chunk->chunkY);
-    mkdir("chunks", 0777);          
-    mkdir("chunks/world_1", 0777);
+    char folder[256];
+    snprintf(folder, sizeof(folder), "chunks/%s", worldName);
+    mkdir("chunks", 0777);
+    mkdir(folder, 0777);
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/chunk_%d_%d.bin", folder, chunk->chunkX, chunk->chunkY);
+
     FILE* f = fopen(path, "wb");
     if (f) {
-        fwrite(chunk, sizeof(chunk), 1, f);
+        fwrite(chunk, sizeof(*chunk), 1, f);
         fclose(f);
     }
 }
+
 
 int load_chunk(chunk* chunk, int cx, int cy) {
     char path[255];
     sprintf(path, "chunks/%s/chunk_%d_%d.bin", worldName, cx, cy);
     FILE* f = fopen(path, "rb");
     if (!f) return 0;
-    fread(chunk, sizeof(chunk), 1, f);
+    fread(chunk, sizeof(*chunk), 1, f);
     fclose(f);
     return 1;
 }
@@ -217,22 +290,36 @@ void save_player_state(Vec3 pos) {
     sprintf(path, "chunks/%s/metadata.txt", worldName);
     FILE* f = fopen(path, "w");
     if (f) {
-        fprintf(f, "%lf %lf %lf\n", pos.x, pos.y, pos.z);
+        fprintf(f, "%s\n", seedString); // Ligne 1 : seed
+        fprintf(f, "%lf %lf %lf\n", pos.x, pos.y, pos.z); // Ligne 2 : position
         fclose(f);
     }
 }
 
+
 Vec3 load_player_state() {
-    Vec3 pos = {CHUNK_SIZE/2, CHUNK_SIZE/2, 10};
+    Vec3 pos = {CHUNK_SIZE / 2, CHUNK_SIZE / 2, 10};
     char path[128];
     sprintf(path, "chunks/%s/metadata.txt", worldName);
+
     FILE* f = fopen(path, "r");
     if (f) {
+        char buffer[128];
+        if (fgets(buffer, sizeof(buffer), f)) {
+            buffer[strcspn(buffer, "\n")] = '\0';  // Enlève le \n
+            seedString = strdup(buffer);
+        }
+
         fscanf(f, "%lf %lf %lf", &pos.x, &pos.y, &pos.z);
         fclose(f);
+    } else {
+        fprintf(stderr, "[WARN] metadata.txt introuvable pour %s\n", worldName);
+        seedString = strdup("default");
     }
+
     return pos;
 }
+
 void generate_heightmap() {
     for (int y = 0; y < CHUNK_SIZE; y++) {
         for (int x = 0; x < CHUNK_SIZE; x++) {
@@ -399,8 +486,7 @@ void draw_chunk(const chunk* c) {
     }
 }
 
-void draw_all_chunks() {
-    cameraState cam = get_current_camera_position();
+void draw_all_chunks(cameraState cam) {
 
     for (int i = 0; i < 2 * RENDER_DISTANCE + 1; i++) {
         for (int j = 0; j < 2 * RENDER_DISTANCE + 1; j++) {
@@ -573,12 +659,20 @@ float get_ground_height_at(float x, float y) {
     int yi = (int)floor(y);
 
     chunk* ch = get_chunk_at_world(xi, yi);
-    if (!ch) return 0.0f;
+    if (!ch) {
+        fprintf(stderr, "[get_ground_height_at] Aucun chunk trouvé pour (%d, %d), retourne 0.0\n", xi, yi);
+        return 0.0f;
+    }
 
     int lx = xi % CHUNK_SIZE;
     int ly = yi % CHUNK_SIZE;
     if (lx < 0) lx += CHUNK_SIZE;
     if (ly < 0) ly += CHUNK_SIZE;
+
+    if (lx >= CHUNK_SIZE - 1 || ly >= CHUNK_SIZE - 1) {
+        fprintf(stderr, "[get_ground_height_at] Coordonnées locales hors bornes (%d,%d)\n", lx, ly);
+        return 0.0f;
+    }
 
     float dx = x - xi;
     float dy = y - yi;
@@ -589,7 +683,6 @@ float get_ground_height_at(float x, float y) {
     float h11 = ch->heightmap[lx + 1][ly + 1] * AMPLITUDE;
 
     float h;
-
     if (dx + dy < 1.0f) {
         h = h00 * (1 - dx - dy) + h10 * dx + h01 * dy;
     } else {
@@ -600,6 +693,7 @@ float get_ground_height_at(float x, float y) {
 
     return h;
 }
+
 
 
 void drawAxes(float len) {
@@ -688,7 +782,59 @@ void draw_velocity(const DroneState* drone) {
         glVertex3f(v.x * scale, v.y * scale, v.z * scale);
     glEnd();
 }
+void load_world_names(const char* filename) {
+    FILE* f = fopen(filename, "r");
+    if (!f) return;
+    worldNames = NULL;
+    worldCount = 0;
+    char buffer[128];
+    while (fgets(buffer, sizeof(buffer), f)) {
+        size_t len = strlen(buffer);
+        if (len > 0 && buffer[len - 1] == '\n') buffer[len - 1] = '\0';
+        char* name = malloc(len);
+        if (!name) continue;
+        strcpy(name, buffer);
+        worldNames = realloc(worldNames, (worldCount + 1) * sizeof(char*));
+        worldNames[worldCount] = name;
+        worldCount++;
+    }
+    fclose(f);
+}
+void add_world_name(const char* filename, const char* name) {
+    FILE* f = fopen(filename, "a");
+    if (f) {
+        fprintf(f, "%s\n", name);
+        fclose(f);
+    }
+    char* copy = malloc(strlen(name) + 1);
+    if (!copy) return;
+    strcpy(copy, name);
+    worldNames = realloc(worldNames, (worldCount + 1) * sizeof(char*));
+    worldNames[worldCount++] = copy;
+}
 
+void free_world_names() {
+    for (int i = 0; i < worldCount; i++) {
+        free(worldNames[i]);
+    }
+    free(worldNames);
+    worldNames = NULL;
+    worldCount = 0;
+}
+
+void exitGame() {
+    free_world_names();
+    if (worldName) {
+        free(worldName);
+        worldName = NULL;
+    }
+
+    if (seedString) {
+        free(seedString);
+        seedString = NULL;
+    }
+    exit(EXIT_SUCCESS);
+}
 
 
 void drawText(int x, int y, const char* text, TTF_Font* font, SDL_Color color) {
@@ -742,6 +888,136 @@ void drawText(int x, int y, const char* text, TTF_Font* font, SDL_Color color) {
     glDeleteTextures(1, &texture);
 }
 
+void getTextInput(const char* prompt, char* buffer, int maxLen) {
+    SDL_Event e;
+    int done = 0;
+    int len = 0;
+    buffer[0] = '\0';
+    SDL_EnableUNICODE(1);
+    TTF_Font* font = TTF_OpenFont("./arial.ttf", 24);
+    SDL_Color white = {255, 255, 255, 255};
+    
+    while (!done) {
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) exit(0);
+            if (e.type == SDL_KEYDOWN) {
+                SDLKey key = e.key.keysym.sym;
+                if (key == SDLK_RETURN) {
+                    done = 1;
+                }
+                else if (key == SDLK_ESCAPE) {
+                    buffer[0] = '\0';
+                    done = 1;
+                }
+                else if (key == SDLK_BACKSPACE && len > 0) {
+                    buffer[--len] = '\0';
+                }
+                else {
+                    char ch = e.key.keysym.unicode & 0x7F;
+                    if (ch >= 32 && ch < 127 && len < maxLen - 1) {
+                        buffer[len++] = ch;
+                        buffer[len] = '\0';
+                    }
+                }
+            }
+        }
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        drawText(100, 100, prompt, font, white);
+        drawText(100, 140, buffer, font, white);
+        SDL_GL_SwapBuffers();
+        SDL_Delay(10);
+    }
+
+    TTF_CloseFont(font);
+    SDL_EnableUNICODE(0);
+}
+
+
+void create_new_world(TTF_Font* font, SDL_Color color) {
+    char bufferSeed[64] = "";
+    char bufferName[128] = "";
+
+    getTextInput("Entrez une seed :", bufferSeed, sizeof(bufferSeed));
+    getTextInput("Entrez un nom pour le monde :", bufferName, sizeof(bufferName));
+
+    // Allocation dynamique globale
+    free(seedString);
+    seedString = malloc(strlen(bufferSeed) + 1);
+    strcpy(seedString, bufferSeed);
+
+    free(worldName);
+    worldName = malloc(strlen(bufferName) + 1);
+    strcpy(worldName, bufferName);
+
+    init_perlin();
+    add_world_name("worlds.txt", worldName);
+
+    if (!c) c = malloc(sizeof(chunk));
+    generate_chunk(c, 50, 50);
+    save_chunk(c);
+    generate_forest();
+    generate_rock();
+    generate_clouds();
+
+    Vec3 pos = {
+        CHUNK_SIZE,
+        CHUNK_SIZE,
+        get_ground_height_at(CHUNK_SIZE, CHUNK_SIZE) + 2.5f
+    };
+    save_player_state(pos);
+
+    if (mode_fps)
+        cam_pos = pos;
+    else
+        drone.position = pos;
+}
+
+int displayWorldSelection(TTF_Font* font, SDL_Color color) {
+    if (worldCount == 0) {
+        printf("Aucun monde trouvé.\n");
+        return -1;
+    }
+    int selected = 0;
+    int running = 1;
+    while (running) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_QUIT) exit(EXIT_SUCCESS);
+            if (event.type == SDL_KEYDOWN) {
+                switch (event.key.keysym.sym) {
+                    case SDLK_DOWN:
+                        selected = (selected + 1) % worldCount;
+                        break;
+                    case SDLK_UP:
+                        selected = (selected - 1 + worldCount) % worldCount;
+                        break;
+                    case SDLK_RETURN:
+                        running = 0;
+                        break;
+                    case SDLK_ESCAPE:
+                        return -1;
+                }
+            }
+        }
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        drawText(100, 50, "=== Selectionnez un monde ===", font, color);
+
+        for (int i = 0; i < worldCount; i++) {
+            if (!worldNames[i]) {
+                printf("Erreur : worldNames[%d] est NULL\n", i);
+                continue;
+            }
+            char line[256];
+            snprintf(line, sizeof(line), "%s %s", (i == selected ? "->" : "  "), worldNames[i]);
+            drawText(120, 100 + i * 30, line, font, color);
+        }
+        SDL_GL_SwapBuffers();
+        SDL_Delay(10);
+    }
+    return selected;
+}
+
 
 
 int menu() {
@@ -761,71 +1037,66 @@ int menu() {
     int choix = 0;
     int running = 1;
 
+    // === Menu principal ===
     while (running) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_QUIT)
-                exit(0);
+            if (event.type == SDL_QUIT) exit(EXIT_SUCCESS);
             if (event.type == SDL_KEYDOWN) {
                 switch (event.key.keysym.sym) {
                     case SDLK_1: choix = 1; running = 0; break;
                     case SDLK_2: choix = 2; running = 0; break;
-                    case SDLK_3: exit(0); break;
-                    case SDLK_4: {
-                        cameraState cam = get_current_camera_position();
-                        Vec3 pos = { cam.x, cam.y, cam.z };
-                        save_player_state(pos);
-                        break;
-                    }
-                    case SDLK_5: {
-                        Vec3 pos = load_player_state();
-                        if (mode_fps)
-                            cam_pos = pos;
-                        else
-                            drone.position = pos;
-                        updateChunks();
-                        break;
-                    }
+                    case SDLK_3: exitGame();
                 }
             }
         }
 
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         drawText(100, 100, "=== MENU ===", font, white);
-        drawText(100, 140, "1. Générer un nouveau monde", font, white);
-        drawText(100, 180, "2. Charger monde existant", font, white);
+        drawText(100, 140, "1. Nouvelle partie", font, white);
+        drawText(100, 180, "2. Charger partie", font, white);
         drawText(100, 220, "3. Quitter", font, white);
-        drawText(100, 260, "4. Sauvegarder position joueur", font, white);
-        drawText(100, 300, "5. Recharger position sauvegardée", font, white);
         SDL_GL_SwapBuffers();
         SDL_Delay(10);
     }
 
-    if (!c)
-        c = malloc(sizeof(chunk));
-
     if (choix == 1) {
-        generate_chunk(c, 50, 50);
-        save_chunk(c);
-        generate_forest();
-        generate_rock();
-        generate_clouds();
-    } else if (choix == 2) {
-        if (!load_chunk(c, 50, 50)) {
-            generate_chunk(c, 50, 50);
+        create_new_world(font, white);
+    }
+
+    if (choix == 2) {
+        load_world_names("worlds.txt");
+        int selected = displayWorldSelection(font, white);
+        if (selected >= 0 && selected < worldCount) {
+        if (worldName) free(worldName); // sécurité si déjà alloué
+        worldName = malloc(strlen(worldNames[selected]) + 1);
+        if (!worldName) {
+            fprintf(stderr, "Erreur d'allocation mémoire pour worldName\n");
+            exit(EXIT_FAILURE);
+        }
+        strcpy(worldName, worldNames[selected]);
+        Vec3 pos = load_player_state();  // Charge avant
+        int chunkX = (int)(pos.x) / CHUNK_SIZE;
+        int chunkY = (int)(pos.y) / CHUNK_SIZE;
+        if (!c) c = malloc(sizeof(chunk));
+        if (!load_chunk(c, chunkX, chunkY)) {
+            generate_chunk(c, chunkX, chunkY);
             save_chunk(c);
             generate_forest();
             generate_rock();
             generate_clouds();
+            }
+        if (mode_fps)
+            cam_pos = pos;
+        else
+            drone.position = pos;
         }
     }
 
-    updateChunks();  // Génère chunks autour de la position actuelle
-
+    updateChunks();
     float cx = CHUNK_SIZE;
     float cy = CHUNK_SIZE;
     float cz = get_ground_height_at(cx, cy) + 2.5f;
-
     if (mode_fps) {
         cam_pos.x = cx;
         cam_pos.y = cy;
@@ -837,12 +1108,12 @@ int menu() {
         drone.position.y = cy;
         drone.position.z = cz;
     }
-
     TTF_CloseFont(font);
     TTF_Quit();
 
     return (choix == 1 || choix == 2);
 }
+
 
 
 void update_camera_fps(const Uint8* keystate, double deltaTime) {
@@ -926,7 +1197,7 @@ void affichage(const DroneState* drone, float camRadius, float camPitch, float c
         );
     }
 
-    draw_all_chunks();
+    draw_all_chunks(cam);
     draw_forest();
     draw_rock();
     draw_water(0.3f, time);

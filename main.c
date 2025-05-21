@@ -35,20 +35,23 @@ int main(int argc, char *argv[]) {
 
     // Génération de la map (appelé une seule fois)
     srand(time(NULL));
-    init_perlin();
     if (!menu()) {
     fprintf(stderr, "Erreur lors du chargement/génération du chunk. Quitte.\n");
     return EXIT_FAILURE;
     }
+    printf("ok avant perlin \n");
+    init_perlin();
+    printf("ok après perlin \n");
     // État initial du drone
     memset(&drone, 0, sizeof(drone));
+    printf("ok après memset \n");
     drone.orientation.w = 10.;
     drone.position.x = CHUNK_SIZE / 2;;  // ou un autre point central
     drone.position.y = CHUNK_SIZE / 2;;
-
+    printf("[main] Drone pos avant get_height: %.2f %.2f\n", drone.position.x, drone.position.y);
     drone.position.z = get_ground_height_at(drone.position.x, drone.position.y) + 2 ;
 
-
+    printf("[main] Drone pos près get_height: %.2f %.2f %.2f\n", drone.position.x, drone.position.y, drone.position.z);
     // Vitesses initiales des rotors (rad/s)
     // double rotorSpeeds[4] = {400.0, 400.0, 400.0, 400.0};
     double rotorSpeeds[4] = {0.0, 0.0, 0.0, 0.0};
@@ -251,7 +254,6 @@ int main(int argc, char *argv[]) {
         // printf("Position: %.2f %.2f %.2f | Vitesse: %.2f %.2f %.2f\n",
         // drone.position.x, drone.position.y, drone.position.z,
         // drone.velocity.x, drone.velocity.y, drone.velocity.z);
-        printf("Z: %.2f | Vz: %.2f | Throttle: %.1f\n", drone.position.z, drone.velocity.z, throttle);
         // Limiteur de boucle
         SDL_Delay(5);
     }

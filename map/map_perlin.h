@@ -4,8 +4,8 @@
 #include "../drone.h" // pour DroneState
 #include <SDL/SDL.h> 
 
-#define WIDTH 1760
-#define HEIGHT 880
+#define WIDTH 900
+#define HEIGHT 900
 #define RENDER_DISTANCE 2
 #define CHUNK_SIZE 64
 #define MAP_WIDTH 200
@@ -59,6 +59,7 @@ struct clouds{
 
 const tree* get_forest();
 const rocks* get_rocks();
+
 
 cameraState get_current_camera_position(void);
 void update_camera_fps(const Uint8* keys, double dt);
